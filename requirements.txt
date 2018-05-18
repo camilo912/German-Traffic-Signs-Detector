@@ -1,0 +1,7 @@
+click
+sklearn
+numpy
+scipy
+opencv-python
+opencv-contrib-python
+glob
