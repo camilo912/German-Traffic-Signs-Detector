@@ -5,3 +5,5 @@ scipy
 opencv-python
 opencv-contrib-python
 glob
+matplotlib
+tensorflow
