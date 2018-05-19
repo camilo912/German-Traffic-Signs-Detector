@@ -10,6 +10,7 @@ import time
 from matplotlib import pyplot as plt
 import tensorflow as tf
 from sklearn.preprocessing import OneHotEncoder
+from tensorflow.contrib.layers import flatten
 
 @click.group(invoke_without_command=True)
 @click.pass_context
@@ -265,24 +266,134 @@ def train_tensor_model(X_train, y_train, X_test, y_test):
 ################# model tensor flow lenet 5 ###################
 @cli.command()
 def lenet5():
-    x_train, x_test, y_train, y_test = read_images()
+    X_train, X_test, y_train, y_test = read_images()
+    train_lenet(X_train, X_test, y_train, y_test)
 
 def read_images():
-    images_directory_path = "./images/FullIJCNN2013/"
+    images_directory_path = "./images/"
     images_train_names = []
     images_test_names = []
     for i in range(43):
         if i < 10:
-            images_train_names = glob.glob(images_directory_path + "train/0" + str(i) + "/*.ppm")
-            images_test_names = glob.glob(images_directory_path + "test/0" + str(i) + "/*.ppm")
+            images_train_names.extend(glob.glob(images_directory_path + "train/0" + str(i) + "/*.ppm"))
+            images_test_names.extend(glob.glob(images_directory_path + "test/0" + str(i) + "/*.ppm"))
         else:
-            images_train_names = glob.glob(images_directory_path + "train/" + str(i) + "/*.ppm")
-            images_test_names = glob.glob(images_directory_path + "test/" + str(i) + "/*.ppm")
+            images_train_names.extend(glob.glob(images_directory_path + "train/" + str(i) + "/*.ppm"))
+            images_test_names.extend(glob.glob(images_directory_path + "test/" + str(i) + "/*.ppm"))
 
     images_train = []
+    labels_train = []
     images_test = []
-    for path in images_train:
-        image = cv2.imread(path)
+    labels_test = []
+
+    for path in images_train_names:
+        image = cv2.resize(cv2.imread(path, 0), (32,32))
+        images_train.append(image)
+        labels_train.append(int(path.split("/")[-2]))
+
+    for path in images_test_names:
+        image = cv2.resize(cv2.imread(path, 0), (32,32))
+        images_test.append(image)
+        labels_test.append(int(path.split("/")[-2]))
+
+    images_train = np.asarray(images_train)[:,:,:,np.newaxis].astype(np.float32)
+    labels_train = np.asarray(labels_train)
+    images_test = np.asarray(images_test)[:,:,:,np.newaxis].astype(np.float32)
+    labels_test = np.asarray(labels_test)
+
+    return images_train, images_test, labels_train, labels_test
+
+def evaluate(X_data, y_data, BATCH_SIZE, accuracy, X, y):
+    num_examples = len(X_data)
+    total_accuracy = 0
+    sess = tf.get_default_session()
+    for offset in range(0, num_examples, BATCH_SIZE):
+        batch_x, batch_y = X_data[offset:offset+BATCH_SIZE], y_data[offset:offset+BATCH_SIZE]
+        accuracy_ = sess.run(accuracy, feed_dict={X: batch_x, y: batch_y})
+        total_accuracy += (accuracy_ * len(batch_x))
+    return total_accuracy / num_examples
+
+def train_lenet(X_train, X_test, y_train, y_test):
+    tf.reset_default_graph()
+    tf.set_random_seed(10)
+
+    X = tf.placeholder(tf.float32, (None, X_train.shape[1], X_train.shape[1], 1), name='X')
+    y = tf.placeholder(tf.int32, (None), name='Y')
+    y_one_hot = tf.one_hot(y, 43)
+
+    #################### layer 1 ####################
+    W1 = tf.get_variable('W1', (5, 5, 1, 6), initializer = tf.truncated_normal_initializer())
+    b1 = tf.get_variable('b1', initializer = np.zeros(6, dtype=np.float32))
+    Z1 = tf.nn.conv2d(X, W1, strides=[1, 1, 1, 1], padding='VALID') + b1
+    A1 = tf.nn.relu(Z1)
+    A1max_pool = tf.nn.max_pool(A1, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
+
+
+    #################### layer 2 ####################
+    W2 = tf.get_variable('W2', (5, 5, 6, 16), initializer=tf.truncated_normal_initializer())
+    b2 = tf.get_variable('b2', initializer=np.zeros(16, dtype=np.float32))
+    Z2 = tf.nn.conv2d(A1max_pool, W2, strides=[1, 1, 1, 1], padding='VALID') + b2
+    A2 = tf.nn.relu(Z2)
+    A2max_pool = tf.nn.max_pool(A2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='VALID')
+    A2flat = flatten(A2max_pool)
+
+    #################### layer 3 ####################
+    W3 = tf.get_variable("W3", (400, 120), initializer = tf.truncated_normal_initializer()) # for 80
+    # W3 = tf.get_variable("W3", (7744, 120), initializer = tf.truncated_normal_initializer()) # for 100
+    # W3 = tf.get_variable("W3", (150544, 120), initializer = tf.truncated_normal_initializer()) # for 400
+    b3 = tf.get_variable("b3", initializer = np.zeros(120, dtype=np.float32))
+    Z3 = tf.add(tf.tensordot(A2flat, W3, [[1], [0]]), b3)
+    A3 = tf.nn.relu(Z3)
+
+    #################### layer 4 ####################
+    W4 = tf.get_variable("W4", (120, 84), initializer = tf.truncated_normal_initializer())
+    b4  = tf.get_variable("b4", initializer = np.zeros(84, dtype=np.float32))
+    Z4 = tf.add(tf.tensordot(A3, W4, [[1], [0]]), b4)
+    A4 = tf.nn.relu(Z4)
+
+    #################### output layer ####################
+    W_l = tf.get_variable("W_l", (84, 43), initializer=tf.truncated_normal_initializer())
+    b_l = tf.get_variable("b_l", initializer=np.zeros(43, dtype=np.float32))
+
+    logits = tf.add(tf.tensordot(A4, W_l, [[1], [0]]), b_l)
+
+    #################### trainning ####################
+    entropy   = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=y_one_hot)
+    loss      = tf.reduce_mean(entropy)
+    optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+    train     = optimizer.minimize(loss)
+    correct   = tf.equal(tf.argmax(logits, 1), tf.argmax(y_one_hot, 1))
+    accuracy  = tf.reduce_mean(tf.cast(correct, tf.float32))
+
+    saver = tf.train.Saver()
+
+    BATCH_SIZE = 64
+    EPOCHS = 300
+    EVALUATE_EVERY_N_EPOCHS = 5
+
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        num_examples = len(X_train)
+
+        t0 = time.time()
+        for epoch in range(EPOCHS):
+
+            for offset in range(0, num_examples, BATCH_SIZE):
+                end = offset + BATCH_SIZE
+                batch_X = X_train[offset:end]
+                batch_y = y_train[offset:end]
+                sess.run(train, feed_dict={X: batch_X, y: batch_y})
+
+            if (epoch % EVALUATE_EVERY_N_EPOCHS) == 0:
+                train_accuracy = evaluate(X_train, y_train, BATCH_SIZE, accuracy, X, y)
+                validation_accuracy = evaluate(X_test, y_test, BATCH_SIZE, accuracy, X, y)
+                fortmat_string = "EPOCH({})\t -> Train Accuracy = {:.3f} | Validation Accuracy = {:.3f}"
+                print(fortmat_string.format(epoch, train_accuracy, validation_accuracy))
+        t1 = time.time()
+        total = t1-t0
+        print("trainning elapsed time", round(total, 2), "seconds")
+        saver.save(sess, './lenet-5')
+
 
 if __name__ == '__main__':
     cli()
